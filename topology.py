@@ -100,7 +100,9 @@ def path(table, src, dst):
 
 
 def port_of(sw, neighbor):
-    link = LINKS[frozenset((sw, neighbor))]
+    link = LINKS.get(frozenset((sw, neighbor)))
+    if link is None:
+        raise KeyError(f"No link between {sw} and {neighbor}")
     intf = link.intf1 if link.intf1.node.name == sw else link.intf2
     return NODES[sw].ports[intf.name]
 
