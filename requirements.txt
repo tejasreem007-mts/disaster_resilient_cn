@@ -1,3 +1,0 @@
-ryu
-eventlet==0.30.2
-networkx
