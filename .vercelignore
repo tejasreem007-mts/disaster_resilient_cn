@@ -1,0 +1,6 @@
+*.py
+setup.sh
+captures
+results
+docs
+README.md

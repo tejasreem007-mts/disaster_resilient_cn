@@ -1,105 +1,81 @@
 # Disaster-Resilient Communication Network
-Automated link-failure detection and alternate-path recovery on a hybrid wired + wireless SDN, using Mininet-WiFi, Ryu and Wireshark.
+Automated link-failure detection and alternate-path recovery on a hybrid wired + wireless network (Mininet-WiFi, Open vSwitch, Wireshark).
 
-## Topology
-![topology](docs/topology.svg)
+![topology](docs/topology.png)
+
+## Topology (11 nodes)
+| Type | Nodes |
+|---|---|
+| Hosts (wired) | h1 Command Centre (sender), h2 Hospital |
+| Core switches (wired mesh) | s1, s2, s3, s4 |
+| Access points (Wi-Fi) | ap1 (zoneA), ap2 (zoneB) |
+| Stations (wireless) | sta1, sta2 (on ap1), sta3 Field Team (receiver, on ap2) |
+| Radio backhaul | s1 to s3, 5 Mbps, 30 ms, 5% loss (last resort) |
 
 ```mermaid
-graph TD
-  C0((Ryu Controller)):::ctl
-  H1[H1] --- S1
-  H2[H2] --- S4
-  S1 --- S2
-  S2 --- S3
-  S3 --- S4
-  S4 --- S1
-  S1 --- S3
-  AP1((AP1)) --- S1
-  AP1 --- S2
-  AP2((AP2)) --- S3
-  AP2 --- S4
-  AP3((AP3)) --- S2
-  AP3 --- S3
-  AP1 -.- STA1
-  AP1 -.- STA2
-  AP2 -.- STA3
-  AP2 -.- STA4
-  STA4 -.roam.- AP3
-  classDef ctl fill:#eee,stroke:#333;
+graph LR
+  h1[h1 sender] --- s1
+  s1 --- s2
+  s2 --- s3
+  s1 --- s4
+  s4 --- s3
+  s2 --- s4
+  s1 -. radio backup .- s3
+  h2[h2 hospital] --- s4
+  s2 --- ap1
+  s3 --- ap2
+  ap1 -.wifi.- sta1
+  ap1 -.wifi.- sta2
+  ap2 -.wifi.- sta3[sta3 receiver]
 ```
-Solid = wired, dotted = wireless. 4 core switches, 3 APs, 2 wired hosts, 4 stations (19 nodes with controller excluded).
 
-## Why packets still get delivered
-| Layer | Redundancy |
-|---|---|
-| Wired core | Ring + chord: 2 or more paths between any two switches |
-| AP backhaul | Every AP is wired to 2 different core switches |
-| Wireless access | Overlapping AP coverage, stations can roam (sta4) |
-| Control plane | Failure detected by LLDP/port status, Dijkstra recomputes, flows re-pushed |
-| Transport | TCP retransmits the few packets lost during failover |
+## How recovery works
+1. Dijkstra computes the lowest-cost path to every host and installs `ip,nw_dst` flow rules on s1 to s4 (`ovs-ofctl`).
+2. A monitor thread polls the operational state of every core interface every 200 ms (the same signal an OpenFlow port-status event gives).
+3. On any change it recomputes routes over the surviving links and overwrites the flows. Traffic moves to the next best path, ending on the radio backhaul if all wired paths to s3 are gone.
 
-Note: guaranteed delivery is not possible during the failover window. Expect a short burst of loss for ICMP, which is what we measure.
+Path order h1 to sta3: `s1-s2-s3` then `s1-s4-s3` then `s1-s3 (radio)`.
 
-## Setup (Ubuntu 20.04/22.04 VM)
+## Setup (once)
 ```bash
-git clone <your-repo-url> && cd disaster-resilient-network
-bash scripts/setup.sh
+./setup.sh            # Ubuntu VM, installs Mininet-WiFi, tcpdump, Wireshark
 ```
 
 ## Run
-Terminal 1 (controller):
 ```bash
-bash scripts/run_controller.sh
+sudo python3 topology.py          # interactive
+sudo python3 topology.py --auto   # scripted failure demo (about 62 s) + loss summary
 ```
-Terminal 2 (network):
+Interactive commands:
+```
+mininet-wifi> h1 ping -c 5 sta3
+mininet-wifi> link s2 s3 down      # watch the log reroute via s4
+mininet-wifi> link s3 s4 down      # now only the radio link remains
+mininet-wifi> link s2 s3 up
+mininet-wifi> sta3 iperf -s &      then   h1 iperf -c 10.0.0.13
+```
+
+## Wireshark evidence
+`captures/*.pcap` is written per core link. Open with `wireshark captures/s2-eth2.pcap` (names vary, use `ls captures`).
+Filters: `icmp`, `icmp.resp_in`, `icmp && frame.time_delta_displayed > 0.5` (gaps during failover).
+Compare which pcap files keep receiving ICMP before and after each failure to prove the path change.
+
+## Regenerate diagram
 ```bash
-bash scripts/run_network.sh              # interactive CLI
-bash scripts/run_network.sh --mobility   # sta4 roams ap2 -> ap3
-bash scripts/run_network.sh --auto       # automated failover test
+python3 diagram.py
 ```
 
-## Manual failure tests (Mininet CLI)
-```
-mininet-wifi> h1 ping sta3
-mininet-wifi> link s1 s4 down        # wired link failure
-mininet-wifi> link s1 s4 up
-mininet-wifi> link ap2 s3 down       # AP uplink failure (other uplink takes over)
-mininet-wifi> link s1 s2 down        # second core failure
-mininet-wifi> h1 ping h2
-mininet-wifi> sta1 ping sta3         # wireless to wireless across the core
-mininet-wifi> h1 iperf -s &          # throughput before/during/after
-mininet-wifi> sta3 iperf -c 10.0.0.1 -t 30
-```
-Watch the controller terminal for `LINK DOWN`, `PATH ...` and `RECOVERY: ... ms` lines.
+## Expected demo timeline (`--auto`)
+| t (s) | Event | Expected path h1 to sta3 |
+|---|---|---|
+| 0 | start | s1-s2-s3 |
+| 8 | s2-s3 down | s1-s4-s3 |
+| 22 | s3-s4 down | s1-s3 (radio) |
+| 38 | s2-s3 up | s1-s2-s3 |
+| 48 | s3-s4 up | s1-s2-s3 |
 
-## Wireshark
-`--auto` writes `results/h1.pcap` and `results/sta3.pcap`.
-| Goal | Filter |
-|---|---|
-| Ping loss window | `icmp` (look for gaps in `icmp.seq`) |
-| Unanswered requests | `icmp && !icmp.resp_in` |
-| LLDP discovery | `lldp` |
-| OpenFlow (capture on `lo`) | `tcp.port == 6653` or `openflow_v4` |
-| Flow rule pushes | `openflow_v4.type == 14` |
-| Wireless side | capture on `sta3-wlan0` or `hwsim0` |
+## Note on wireless realism
+Station to AP links are real emulated Wi-Fi (Mininet-WiFi). The s1-s3 radio backhaul is modelled as a shaped link (rate, delay, loss) because Mininet-WiFi does not give point-to-point AP mesh by default.
 
-## Metrics to report
-Detection time (controller log), recovery time (`RECOVERY: ... ms`), packets lost (`results/summary.txt`), throughput with iperf before/during/after.
-
-## Troubleshooting
-| Problem | Fix |
-|---|---|
-| `ryu-manager` import error with eventlet | `pip install eventlet==0.30.2` |
-| `Cannot find required executable ovs-...` | `sudo service openvswitch-switch start` |
-| Dirty state after a crash | `sudo mn -c` |
-| Stations never associate | `sudo modprobe mac80211_hwsim`, use a VM, not default WSL2 |
-| Ping works only after a few tries | Wait 3 to 5 s after start for LLDP discovery |
-
-## Repo layout
-```
-topo.py            Mininet-WiFi topology + automated test
-ryu_app/recovery.py  Ryu controller (detection + Dijkstra recovery)
-scripts/           setup and run helpers
-docs/topology.svg  topology diagram
-results/           pcaps and summary output
-```
+## Web simulator (Vercel)
+`public/index.html` is a static page that simulates the same failover in the browser. `vercel.json` marks the repo as a static site (output folder `public`) and `.vercelignore` hides the Python files so Vercel does not try to build them.

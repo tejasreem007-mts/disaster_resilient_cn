@@ -1,15 +1,9 @@
 #!/usr/bin/env bash
-# Ubuntu 20.04 / 22.04 VM. Run once from the repo root.
+# Run once on an Ubuntu 20.04/22.04 VM (not WSL: it lacks the mac80211_hwsim wifi module)
 set -e
 sudo apt update
-sudo apt install -y git python3-pip python3-venv mininet openvswitch-switch tcpdump wireshark net-tools iperf
-sudo service openvswitch-switch start
-if [ ! -d "$HOME/mininet-wifi" ]; then
-  git clone https://github.com/intrig-unibo/mininet-wifi "$HOME/mininet-wifi"
-  (cd "$HOME/mininet-wifi" && sudo util/install.sh -Wlnfv)
-fi
-python3 -m venv "$HOME/ryu-env"
-source "$HOME/ryu-env/bin/activate"
-pip install --upgrade pip "setuptools<68" wheel
-pip install -r requirements.txt
-echo "Setup done."
+sudo apt install -y git tcpdump wireshark python3-pip python3-matplotlib net-tools
+git clone https://github.com/intrig-unicamp/mininet-wifi ~/mininet-wifi
+cd ~/mininet-wifi
+sudo util/install.sh -Wlnfv
+echo "Done. Test with: sudo mn --wifi"
