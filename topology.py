@@ -254,6 +254,10 @@ def analyse(logfile, interval=0.2):
 def auto_demo(net, mon):
     os.makedirs('results', exist_ok=True)
     out = 'results/ping_h1_sta3.log'
+    info('*** Waiting for WiFi association...\n')
+    time.sleep(5)
+    for sta in ('sta1', 'sta2', 'sta3'):
+        NODES[sta].cmd('iw dev wlan0 link | grep -q "Connected" || echo "NOT ASSOCIATED"')
     NODES['h1'].cmd('ping -i 0.2 -c 300 %s > %s &' % (IPS['sta3'], out))
     plan = [(8, 's2', 's3', 'down'), (22, 's3', 's4', 'down'),
             (38, 's2', 's3', 'up'), (48, 's3', 's4', 'up')]
