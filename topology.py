@@ -102,7 +102,7 @@ def path(table, src, dst):
 def port_of(sw, neighbor):
     link = LINKS[frozenset((sw, neighbor))]
     intf = link.intf1 if link.intf1.node.name == sw else link.intf2
-    return NODES[sw].ports[intf]
+    return NODES[sw].ports[intf.name]
 
 
 def ofctl(*args):
@@ -183,35 +183,19 @@ def build():
                                       position='90,50,0', failMode='secure')
     net.setPropagationModel(model='logDistance', exp=4.5)
     info('*** Configuring wifi nodes\n')
-    (getattr(net, 'configureNodes', None) or net.configureWifiNodes)()
+    net.configureWifiNodes()
 
     info('*** Adding wired + radio links\n')
     for a, b, cost, kind in EDGES:
         if kind == 'wifi':
             continue
         if kind == 'radio':
-            net.addLink(NODES[a], NODES[b], cls=TCLink, bw=5, delay='30ms', loss=5)
+            l = net.addLink(NODES[a], NODES[b], cls=TCLink, bw=5, delay='30ms', loss=5)
         else:
-            net.addLink(NODES[a], NODES[b], cls=TCLink, bw=100, delay='2ms')
+            l = net.addLink(NODES[a], NODES[b], cls=TCLink, bw=100, delay='2ms')
+        LINKS[frozenset((a, b))] = l
     net.build()
     net.start()
-    # addLink() returns None in some Mininet-WiFi versions, so look links up afterwards
-    wanted = {frozenset((a, b)) for a, b, _, k in EDGES if k != 'wifi'}
-    for l in net.links:
-        try:
-            k = frozenset((l.intf1.node.name, l.intf2.node.name))
-        except AttributeError:
-            continue
-        if k in wanted:
-            LINKS[k] = l
-    for k in wanted - set(LINKS):
-        a, b = sorted(k)
-        found = net.linksBetween(NODES[a], NODES[b])
-        if found:
-            LINKS[k] = found[0]
-    missing = wanted - set(LINKS)
-    if missing:
-        raise RuntimeError('links not found: %s' % sorted(tuple(sorted(m)) for m in missing))
     for ap in ('ap1', 'ap2'):
         ofctl('add-flow', ap, 'priority=1,actions=NORMAL')   # APs have one uplink: safe to learn
     # static ARP so no broadcast storms in the meshed core
@@ -273,7 +257,7 @@ if __name__ == '__main__':
     table = install_flows()
     log('INITIAL     h1 -> sta3 : %s' % ' -> '.join(path(table, 'h1', 'sta3')))
     mon = Monitor(); mon.start()
-    caps = [] if '--no-capture' in sys.argv else start_captures()
+    caps = [] if '--no-capture' in sys.argv or True else start_captures()  # tcpdump often unavailable
     try:
         if '--auto' in sys.argv:
             auto_demo(net, mon)
