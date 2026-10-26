@@ -175,6 +175,10 @@ def set_link(a, b, state, mon=None):
 
 # ---------------------------------------------------------------- build
 def build():
+    # Clean up any leftover interfaces from previous runs
+    import subprocess
+    subprocess.run(['mn', '-c'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
     net = Mininet_wifi(controller=None, accessPoint=OVSKernelAP,
                        switch=OVSKernelSwitch, link=TCLink)
     info('*** Adding nodes\n')
