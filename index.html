@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Disaster-Resilient Network Simulator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Fraunces:opsz,wght@9..144,600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#eef1f4;--panel:#fff;--ink:#14202b;--mute:#5b6b7a;--line:#d3dae1;--wire:#1d4e89;--wifi:#0f8b8d;--radio:#d1700f;--bad:#c62f3f;--ok:#1f8a4c}
+@media (prefers-color-scheme:dark){:root{--bg:#10171e;--panel:#18222b;--ink:#e8eef3;--mute:#9aabb9;--line:#2b3946;--wire:#6aa6e8;--wifi:#4cc9c3;--radio:#f0a04b;--bad:#ff6b7a;--ok:#5fd18b}}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font-family:"Atkinson Hyperlegible",system-ui,sans-serif}
+body{padding:clamp(12px,3vw,28px);max-width:1280px;margin:0 auto}
+h1{font-family:Fraunces,Georgia,serif;font-size:clamp(22px,3.2vw,34px);margin:0 0 4px;font-weight:600}
+.sub{color:var(--mute);margin:0 0 18px;max-width:70ch}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px}
+@media(max-width:960px){.grid{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+svg{width:100%;height:auto;display:block}
+.edge{stroke-width:4;fill:none;cursor:pointer}
+.edge.wired{stroke:var(--wire)}.edge.radio{stroke:var(--radio);stroke-dasharray:10 7}.edge.wifi{stroke:var(--wifi);stroke-dasharray:2 7;stroke-linecap:round;cursor:default}
+.edge.down{stroke:var(--bad);stroke-dasharray:4 8;opacity:.8}
+.hit{stroke:transparent;stroke-width:22;fill:none;cursor:pointer}
+.path{stroke:var(--ok);stroke-width:9;fill:none;opacity:.28;stroke-linecap:round;stroke-linejoin:round}
+.node rect{fill:var(--panel);stroke:var(--ink);stroke-width:1.6}
+.node.sw rect{fill:color-mix(in srgb,var(--wire) 16%,var(--panel))}
+.node.ap rect{fill:color-mix(in srgb,var(--wifi) 18%,var(--panel))}
+.node text{font-size:13px;font-weight:700;fill:var(--ink);text-anchor:middle}
+.node .role{font-size:10.5px;font-weight:400;fill:var(--mute)}
+.pkt-ok{fill:var(--ok)}.pkt-lost{fill:var(--bad)}
+.cross{stroke:var(--bad);stroke-width:4;stroke-linecap:round}
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:13px;color:var(--mute);margin-top:8px}
+.legend i{display:inline-block;width:26px;height:0;border-top:4px solid;vertical-align:middle;margin-right:6px}
+label{font-size:13px;color:var(--mute);display:block;margin-bottom:3px}
+select,button{font:inherit;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:8px;padding:7px 10px}
+button{cursor:pointer}button:hover{border-color:var(--ink)}
+button:focus-visible,select:focus-visible{outline:3px solid var(--wire);outline-offset:2px}
+button.primary{background:var(--ink);color:var(--bg);border-color:var(--ink);font-weight:700}
+.row{display:flex;gap:8px;margin-bottom:12px}.row>div{flex:1}.row select{width:100%}
+.big{font-size:15px;line-height:1.5;word-break:break-word}
+.status{font-weight:700}.status.ok{color:var(--ok)}.status.bad{color:var(--bad)}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0}
+.stats div{border:1px solid var(--line);border-radius:8px;padding:8px}
+.stats b{display:block;font-size:22px;font-family:Fraunces,serif}
+.stats span{font-size:12px;color:var(--mute)}
+.links{display:grid;gap:6px;margin:10px 0}
+.links button{display:flex;justify-content:space-between;text-align:left}
+.links .down{border-color:var(--bad);color:var(--bad)}
+#log{height:150px;overflow:auto;font:12.5px/1.5 ui-monospace,Menlo,Consolas,monospace;border:1px solid var(--line);border-radius:8px;padding:8px;background:var(--bg)}
+#log div.bad{color:var(--bad)}#log div.ok{color:var(--ok)}
+@media(prefers-reduced-motion:reduce){*{animation:none!important}}
+</style>
+</head>
+<body>
+<h1>Disaster-Resilient Communication Network</h1>
+<p class="sub">Click any wired or radio link to cut it. The controller notices within 200 ms, recomputes the cheapest surviving path and keeps packets flowing, falling back to the radio link when every wired route is gone.</p>
+<div class="grid">
+  <div class="card">
+    <svg id="svg" viewBox="0 0 920 560" role="img" aria-label="Network topology with wired, Wi-Fi and radio links"></svg>
+    <div class="legend">
+      <span><i style="border-color:var(--wire)"></i>Wired</span>
+      <span><i style="border-color:var(--radio);border-top-style:dashed"></i>Radio backup</span>
+      <span><i style="border-color:var(--wifi);border-top-style:dotted"></i>Wi-Fi</span>
+      <span><i style="border-color:var(--bad);border-top-style:dashed"></i>Failed</span>
+      <span><i style="border-color:var(--ok);opacity:.4;border-top-width:8px"></i>Active path</span>
+    </div>
+  </div>
+  <div class="card">
+    <div class="row">
+      <div><label for="src">Sender</label><select id="src"></select></div>
+      <div><label for="dst">Receiver</label><select id="dst"></select></div>
+    </div>
+    <div class="big">Status: <span id="status" class="status ok">Delivering</span></div>
+    <div class="big" id="pathtxt"></div>
+    <div class="stats">
+      <div><b id="sent">0</b><span>sent</span></div>
+      <div><b id="recv">0</b><span>delivered</span></div>
+      <div><b id="lost">0</b><span>lost</span></div>
+    </div>
+    <div class="row"><button class="primary" id="demo">Run failure demo</button><button id="reset">Restore all</button></div>
+    <label>Links</label>
+    <div class="links" id="links"></div>
+    <label>Controller log</label>
+    <div id="log" aria-live="polite"></div>
+  </div>
+</div>
+<script>
+const N={h1:[70,300,'h1','Command Centre'],s1:[220,300,'s1','switch'],s2:[420,170,'s2','switch'],s4:[420,430,'s4','switch'],s3:[640,300,'s3','switch'],
+h2:[420,525,'h2','Hospital'],ap1:[420,62,'ap1','access point'],ap2:[770,300,'ap2','access point'],sta1:[270,28,'sta1','Rescue A'],sta2:[570,28,'sta2','Rescue B'],sta3:[865,300,'sta3','Field Team']};
+const E=[['h1','s1',1,'wired'],['h2','s4',1,'wired'],['s1','s2',1,'wired'],['s2','s3',1,'wired'],['s1','s4',2,'wired'],['s4','s3',2,'wired'],['s2','s4',3,'wired'],['s1','s3',10,'radio'],['s2','ap1',1,'wired'],['s3','ap2',1,'wired'],['ap1','sta1',1,'wifi'],['ap1','sta2',1,'wifi'],['ap2','sta3',1,'wifi']];
+const HOSTS=['h1','h2','sta1','sta2','sta3'];
+const DETECT=200; // ms, same as the Python monitor poll interval
+const key=(a,b)=>a<b?a+'|'+b:b+'|'+a;
+const down=new Set();           // real link state
+let routeDown=new Set();        // state the controller currently routes by
+const svg=document.getElementById('svg');
+const NS='http://www.w3.org/2000/svg';
+const el=(t,a={},p=svg)=>{const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);p.appendChild(e);return e};
+const $=id=>document.getElementById(id);
+
+// draw
+const gPath=el('g');const gEdge=el('g');const gNode=el('g');const gPkt=el('g');
+const pathEl=el('path',{class:'path'},gPath);
+const edgeEls={};
+E.forEach(([a,b,c,k])=>{
+  const [x1,y1]=N[a],[x2,y2]=N[b];
+  let d=`M${x1},${y1}L${x2},${y2}`;
+  if(k==='radio'){d=`M${x1},${y1}Q430,560 ${x2},${y2}`}
+  const p=el('path',{d,class:'edge '+k},gEdge);
+  const o={p,k,a,b,cross:null};
+  if(k!=='wifi'){
+    const h=el('path',{d,class:'hit',tabindex:0,role:'button','aria-label':`Toggle link ${a} to ${b}`},gEdge);
+    h.addEventListener('click',()=>toggle(a,b));
+    h.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();toggle(a,b)}});
+    o.hit=h;
+  }
+  o.d=d;edgeEls[key(a,b)]=o;
+});
+Object.entries(N).forEach(([n,[x,y,t,role]])=>{
+  const cls=n.startsWith('s')&&!n.startsWith('sta')?'sw':n.startsWith('ap')?'ap':'';
+  const g=el('g',{class:'node '+cls},gNode);
+  el('rect',{x:x-46,y:y-21,width:92,height:42,rx:cls?4:12},g);
+  const a=el('text',{x,y:y-3},g);a.textContent=t;
+  const b=el('text',{x,y:y+13,class:'role'},g);b.textContent=role;
+});
+
+// routing
+function alive(a,b,s){return !s.has(key(a,b))}
+function route(src,dst,s){
+  const adj={};E.forEach(([a,b,c])=>{if(alive(a,b,s)){(adj[a]??=[]).push([b,c]);(adj[b]??=[]).push([a,c])}});
+  const dist={[dst]:0},nxt={},q=[[0,dst]];
+  while(q.length){q.sort((x,y)=>x[0]-y[0]);const [d,u]=q.shift();if(d>dist[u])continue;
+    for(const [v,c] of adj[u]||[]){if(d+c<(dist[v]??1e9)){dist[v]=d+c;nxt[v]=u;q.push([d+c,v])}}}
+  if(src!==dst&&!(src in nxt))return null;
+  const p=[src];while(p[p.length-1]!==dst)p.push(nxt[p[p.length-1]]);return p;
+}
+function log(msg,cls=''){const d=document.createElement('div');d.className=cls;d.textContent=new Date().toLocaleTimeString([], {hour12:false})+'  '+msg;$('log').appendChild(d);$('log').scrollTop=1e9}
+
+// selects
+HOSTS.forEach(h=>{['src','dst'].forEach(id=>{const o=document.createElement('option');o.value=h;o.textContent=h;$(id).appendChild(o)})});
+$('src').value='h1';$('dst').value='sta3';
+let curPath=null;
+function renderRoute(){
+  curPath=route($('src').value,$('dst').value,routeDown);
+  if(!curPath||$('src').value===$('dst').value){pathEl.setAttribute('d','');$('pathtxt').textContent=curPath?'Pick two different nodes':'No surviving path';return}
+  let d='';curPath.forEach((n,i)=>{d+=(i?'L':'M')+N[n][0]+','+N[n][1]});
+  // follow the radio curve visually by using straight segments (clear enough at this scale)
+  pathEl.setAttribute('d',d);
+  const usesRadio=curPath.some((n,i)=>i&&edgeEls[key(n,curPath[i-1])].k==='radio');
+  $('pathtxt').innerHTML='Path: <b>'+curPath.join(' to ')+'</b>'+(usesRadio?' <span style="color:var(--radio)">(radio backup, slower and lossy)</span>':'');
+}
+function renderLinks(){
+  $('links').innerHTML='';
+  E.filter(e=>e[3]!=='wifi').forEach(([a,b,c,k])=>{
+    const isDown=down.has(key(a,b));
+    const bt=document.createElement('button');bt.className=isDown?'down':'';
+    bt.innerHTML=`<span>${a} - ${b} (${k})</span><span>${isDown?'Restore':'Cut'}</span>`;
+    bt.onclick=()=>toggle(a,b);$('links').appendChild(bt);
+    const o=edgeEls[key(a,b)];o.p.classList.toggle('down',isDown);
+    if(isDown&&!o.cross){const m=o.p.getPointAtLength(o.p.getTotalLength()/2);o.cross=el('path',{class:'cross',d:`M${m.x-9},${m.y-9}L${m.x+9},${m.y+9}M${m.x+9},${m.y-9}L${m.x-9},${m.y+9}`},gEdge)}
+    if(!isDown&&o.cross){o.cross.remove();o.cross=null}
+  });
+}
+let timer=null;
+function toggle(a,b){
+  const k=key(a,b);const was=down.has(k);
+  was?down.delete(k):down.add(k);
+  log(`${was?'RESTORED':'FAILED'}  link ${a}-${b}`,was?'ok':'bad');
+  renderLinks();
+  clearTimeout(timer);
+  const t0=performance.now();
+  timer=setTimeout(()=>{
+    routeDown=new Set(down);renderRoute();
+    log(`DETECTED  controller reroutes after ${Math.round(performance.now()-t0)} ms`,'ok');
+    log(curPath?`NEW PATH  ${curPath.join(' -> ')}`:'NEW PATH  none, receiver unreachable',curPath?'':'bad');
+  },DETECT);
+}
+
+// packets
+let sent=0,recv=0,lost=0;
+function stat(){$('sent').textContent=sent;$('recv').textContent=recv;$('lost').textContent=lost;
+  const s=$('status');const ok=!!curPath&&![...down].some(k=>routeDown.has(k)!==down.has(k));
+  s.textContent=curPath?(routeDown.size!==down.size||[...down].some(k=>!routeDown.has(k))?'Detecting failure':'Delivering'):'Unreachable';
+  s.className='status '+(curPath&&s.textContent==='Delivering'?'ok':'bad')}
+function sendPacket(){
+  const path=curPath;if(!path||path.length<2)return;sent++;
+  const c=el('circle',{r:7,class:'pkt-ok'},gPkt);
+  let seg=0,t0=performance.now();const dur=path.some((n,i)=>i&&edgeEls[key(n,path[i-1])].k==='radio')?520:300;
+  function step(now){
+    const a=path[seg],b=path[seg+1];
+    if(down.has(key(a,b))){c.setAttribute('class','pkt-lost');lost++;stat();setTimeout(()=>c.remove(),600);return}
+    const f=Math.min(1,(now-t0)/dur);
+    c.setAttribute('cx',N[a][0]+(N[b][0]-N[a][0])*f);c.setAttribute('cy',N[a][1]+(N[b][1]-N[a][1])*f);
+    if(f>=1){seg++;t0=now;if(seg>=path.length-1){c.remove();recv++;stat();return}}
+    requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);stat();
+}
+setInterval(sendPacket,350);
+setInterval(stat,150);
+
+// demo
+$('reset').onclick=()=>{[...down].forEach(k=>{const [a,b]=k.split('|');toggle(a,b)})};
+$('demo').onclick=()=>{
+  $('src').value='h1';$('dst').value='sta3';[...down].forEach(k=>{const [a,b]=k.split('|');toggle(a,b)});
+  log('DEMO  scripted failure sequence started');
+  [[2,'s2','s3'],[8,'s3','s4'],[14,'s2','s3'],[19,'s3','s4']].forEach(([t,a,b])=>setTimeout(()=>toggle(a,b),t*1000));
+};
+$('src').onchange=$('dst').onchange=()=>{renderRoute();log(`PATH  ${$('src').value} to ${$('dst').value}: ${curPath?curPath.join(' -> '):'none'}`)};
+renderLinks();renderRoute();log('READY  '+(curPath?curPath.join(' -> '):''),'ok');
+</script>
+</body>
+</html>
