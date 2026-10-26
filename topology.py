@@ -1,21 +1,38 @@
+Claude
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Topology · PY
 #!/usr/bin/env python3
 """
 Disaster-Resilient Communication Network
 Automated link-failure detection + alternate-path recovery (Mininet-WiFi)
-
+ 
 Run:  sudo python3 topology.py            (interactive CLI)
       sudo python3 topology.py --auto     (scripted failure demo, then exit)
 """
 import heapq, os, subprocess, sys, threading, time
 from collections import defaultdict
-
+ 
 from mininet.log import setLogLevel, info
 from mininet.node import OVSKernelSwitch
 from mininet.link import TCLink
 from mn_wifi.net import Mininet_wifi
 from mn_wifi.node import OVSKernelAP
 from mn_wifi.cli import CLI
-
+ 
 # ---------------------------------------------------------------- topology
 # (a, b, cost, kind)   kind: wired | radio (backup microwave link) | wifi
 EDGES = [
@@ -37,16 +54,16 @@ HOSTS = ['h1', 'h2', 'sta1', 'sta2', 'sta3']
 SWITCHES = ['s1', 's2', 's3', 's4']
 IPS = {'h1': '10.0.0.1', 'h2': '10.0.0.2',
        'sta1': '10.0.0.11', 'sta2': '10.0.0.12', 'sta3': '10.0.0.13'}
-
+ 
 NODES = {}   # name -> node object
 LINKS = {}   # frozenset({a,b}) -> Link (wired/radio only)
 LOCK = threading.Lock()
-
-
+ 
+ 
 def log(msg):
     print('[%s] %s' % (time.strftime('%H:%M:%S'), msg), flush=True)
-
-
+ 
+ 
 # ---------------------------------------------------------------- routing
 def oper_up(intf_name):
     try:
@@ -54,8 +71,8 @@ def oper_up(intf_name):
             return f.read().strip() == 'up'
     except OSError:
         return False
-
-
+ 
+ 
 def edge_alive(a, b):
     link = LINKS.get(frozenset((a, b)))
     if link is None:
@@ -66,8 +83,8 @@ def edge_alive(a, b):
         if not oper_up(intf.name):
             return False
     return True
-
-
+ 
+ 
 def compute_routes():
     adj = defaultdict(list)
     for a, b, c, _ in EDGES:
@@ -88,8 +105,8 @@ def compute_routes():
                     heapq.heappush(pq, (d + c, v))
         table[dst] = nxt
     return table
-
-
+ 
+ 
 def path(table, src, dst):
     if src != dst and src not in table[dst]:
         return None
@@ -97,19 +114,19 @@ def path(table, src, dst):
     while p[-1] != dst:
         p.append(table[dst][p[-1]])
     return p
-
-
+ 
+ 
 def port_of(sw, neighbor):
     link = LINKS[frozenset((sw, neighbor))]
     intf = link.intf1 if link.intf1.node.name == sw else link.intf2
     return NODES[sw].ports[intf]
-
-
+ 
+ 
 def ofctl(*args):
     subprocess.run(['ovs-ofctl'] + list(args), check=False,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-
+ 
+ 
 def install_flows():
     with LOCK:
         table = compute_routes()
@@ -122,18 +139,18 @@ def install_flows():
                 else:
                     ofctl('add-flow', sw, '%s,actions=output:%d' % (match, port_of(sw, nh)))
         return table
-
-
+ 
+ 
 class Monitor(threading.Thread):
     """Polls link state every 200 ms; on any change recomputes + reinstalls routes."""
     def __init__(self, interval=0.2):
         super().__init__(daemon=True)
         self.interval, self.running = interval, True
         self.fail_time = None   # set by demo to measure detect+recover time
-
+ 
     def snapshot(self):
         return frozenset((a, b) for a, b, _, _ in EDGES if not edge_alive(a, b))
-
+ 
     def run(self):
         prev = self.snapshot()
         while self.running:
@@ -152,8 +169,8 @@ class Monitor(threading.Thread):
                     self.fail_time = None
                 prev = cur
             time.sleep(self.interval)
-
-
+ 
+ 
 def set_link(a, b, state, mon=None):
     link = LINKS[frozenset((a, b))]
     if state == 'down' and mon:
@@ -163,8 +180,8 @@ def set_link(a, b, state, mon=None):
             subprocess.run(['ip', 'link', 'set', 'dev', intf.name, state], check=False)
             break
     log('INJECT      link %s-%s %s' % (a, b, state.upper()))
-
-
+ 
+ 
 # ---------------------------------------------------------------- build
 def build():
     net = Mininet_wifi(controller=None, accessPoint=OVSKernelAP,
@@ -184,18 +201,34 @@ def build():
     net.setPropagationModel(model='logDistance', exp=4.5)
     info('*** Configuring wifi nodes\n')
     (getattr(net, 'configureNodes', None) or net.configureWifiNodes)()
-
+ 
     info('*** Adding wired + radio links\n')
     for a, b, cost, kind in EDGES:
         if kind == 'wifi':
             continue
         if kind == 'radio':
-            l = net.addLink(NODES[a], NODES[b], cls=TCLink, bw=5, delay='30ms', loss=5)
+            net.addLink(NODES[a], NODES[b], cls=TCLink, bw=5, delay='30ms', loss=5)
         else:
-            l = net.addLink(NODES[a], NODES[b], cls=TCLink, bw=100, delay='2ms')
-        LINKS[frozenset((a, b))] = l
+            net.addLink(NODES[a], NODES[b], cls=TCLink, bw=100, delay='2ms')
     net.build()
     net.start()
+    # addLink() returns None in some Mininet-WiFi versions, so look links up afterwards
+    wanted = {frozenset((a, b)) for a, b, _, k in EDGES if k != 'wifi'}
+    for l in net.links:
+        try:
+            k = frozenset((l.intf1.node.name, l.intf2.node.name))
+        except AttributeError:
+            continue
+        if k in wanted:
+            LINKS[k] = l
+    for k in wanted - set(LINKS):
+        a, b = sorted(k)
+        found = net.linksBetween(NODES[a], NODES[b])
+        if found:
+            LINKS[k] = found[0]
+    missing = wanted - set(LINKS)
+    if missing:
+        raise RuntimeError('links not found: %s' % sorted(tuple(sorted(m)) for m in missing))
     for ap in ('ap1', 'ap2'):
         ofctl('add-flow', ap, 'priority=1,actions=NORMAL')   # APs have one uplink: safe to learn
     # static ARP so no broadcast storms in the meshed core
@@ -204,8 +237,8 @@ def build():
             if a != b:
                 NODES[a].setARP(IPS[b], NODES[b].MAC())
     return net
-
-
+ 
+ 
 def start_captures():
     os.makedirs('captures', exist_ok=True)
     procs = []
@@ -218,8 +251,8 @@ def start_captures():
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
             break   # one side of each link is enough
     return procs
-
-
+ 
+ 
 def analyse(logfile, interval=0.2):
     seqs, total = set(), 0
     for line in open(logfile):
@@ -235,8 +268,8 @@ def analyse(logfile, interval=0.2):
         best = max(best, run)
     log('RESULT      sent=%d received=%d lost=%d longest outage=%.1fs'
         % (total, len(seqs), len(miss), best * interval))
-
-
+ 
+ 
 def auto_demo(net, mon):
     os.makedirs('results', exist_ok=True)
     out = 'results/ping_h1_sta3.log'
@@ -249,8 +282,8 @@ def auto_demo(net, mon):
         set_link(a, b, st, mon)
     time.sleep(max(0, 62 - (time.time() - t0)))
     analyse(out)
-
-
+ 
+ 
 if __name__ == '__main__':
     setLogLevel('info')
     net = build()
@@ -269,3 +302,5 @@ if __name__ == '__main__':
         for p in caps:
             p.terminate()
         net.stop()
+ 
+Claude finished the response
