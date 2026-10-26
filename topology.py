@@ -106,8 +106,11 @@ def port_of(sw, neighbor):
 
 
 def ofctl(*args):
-    subprocess.run(['ovs-ofctl'] + list(args), check=False,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        subprocess.run(['ovs-ofctl'] + list(args), check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        log('OFCTL ERROR: %s' % e)
 
 
 def install_flows():
@@ -120,7 +123,12 @@ def install_flows():
                 if nh is None:
                     ofctl('del-flows', sw, 'ip,nw_dst=%s' % IPS[h])
                 else:
-                    ofctl('add-flow', sw, '%s,actions=output:%d' % (match, port_of(sw, nh)))
+                    try:
+                        port = port_of(sw, nh)
+                        ofctl('add-flow', sw, '%s,actions=output:%d' % (match, port))
+                    except KeyError:
+                        # Skip wifi links (not in LINKS) - AP learns via NORMAL
+                        pass
         return table
 
 
@@ -197,7 +205,7 @@ def build():
     net.build()
     net.start()
     for ap in ('ap1', 'ap2'):
-        ofctl('add-flow', ap, 'priority=1,actions=NORMAL')   # APs have one uplink: safe to learn
+        ofctl('add-flow', ap, 'table=0,priority=1,actions=NORMAL')  # APs have one uplink: safe to learn
     # static ARP so no broadcast storms in the meshed core
     for a in HOSTS:
         for b in HOSTS:
@@ -268,4 +276,7 @@ if __name__ == '__main__':
         mon.running = False
         for p in caps:
             p.terminate()
-        net.stop()
+        try:
+            net.stop()
+        except Exception as e:
+            log('NET STOP ERROR: %s' % e)
