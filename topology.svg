@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 620" font-family="Arial, Helvetica, sans-serif">
+  <rect width="960" height="620" fill="#ffffff"/>
+  <text x="480" y="26" text-anchor="middle" font-size="17" font-weight="bold" fill="#1a1a1a">Hybrid Wired + Wireless Topology (Ryu controller connects to all switches and APs)</text>
+  <g stroke="#1f4e9c" stroke-width="4" fill="none">
+    <line x1="280" y1="230" x2="680" y2="230"/>
+    <line x1="680" y1="230" x2="680" y2="390"/>
+    <line x1="680" y1="390" x2="280" y2="390"/>
+    <line x1="280" y1="390" x2="280" y2="230"/>
+    <line x1="280" y1="230" x2="680" y2="390"/>
+    <line x1="110" y1="230" x2="280" y2="230"/>
+    <line x1="110" y1="390" x2="280" y2="390"/>
+    <line x1="480" y1="110" x2="280" y2="230"/>
+    <line x1="480" y1="110" x2="680" y2="230"/>
+    <line x1="480" y1="510" x2="280" y2="390"/>
+    <line x1="480" y1="510" x2="680" y2="390"/>
+    <line x1="850" y1="310" x2="680" y2="230"/>
+    <line x1="850" y1="310" x2="680" y2="390"/>
+  </g>
+  <g stroke="#d9480f" stroke-width="3" stroke-dasharray="9 6" fill="none">
+    <line x1="480" y1="110" x2="400" y2="50"/>
+    <line x1="480" y1="110" x2="570" y2="50"/>
+    <line x1="480" y1="510" x2="400" y2="575"/>
+    <line x1="480" y1="510" x2="660" y2="575"/>
+  </g>
+  <line x1="660" y1="575" x2="850" y2="310" stroke="#d9480f" stroke-width="2" stroke-dasharray="3 6"/>
+  <text x="780" y="470" font-size="12" fill="#d9480f" transform="rotate(-54 780 470)">roam (sta4 mobility)</text>
+  <g fill="#dbe7ff" stroke="#1f4e9c" stroke-width="3">
+    <rect x="245" y="210" width="70" height="40" rx="6"/>
+    <rect x="645" y="210" width="70" height="40" rx="6"/>
+    <rect x="645" y="370" width="70" height="40" rx="6"/>
+    <rect x="245" y="370" width="70" height="40" rx="6"/>
+  </g>
+  <g font-size="16" font-weight="bold" text-anchor="middle" fill="#1a1a1a">
+    <text x="280" y="236">S1</text><text x="680" y="236">S2</text>
+    <text x="680" y="396">S3</text><text x="280" y="396">S4</text>
+  </g>
+  <g fill="#e6f4ea" stroke="#2b8a3e" stroke-width="3">
+    <rect x="60" y="210" width="60" height="40" rx="6"/>
+    <rect x="60" y="370" width="60" height="40" rx="6"/>
+  </g>
+  <g font-size="16" font-weight="bold" text-anchor="middle" fill="#1a1a1a">
+    <text x="90" y="236">H1</text><text x="90" y="396">H2</text>
+  </g>
+  <g fill="#fff0e0" stroke="#d9480f" stroke-width="3">
+    <circle cx="480" cy="110" r="26"/>
+    <circle cx="480" cy="510" r="26"/>
+    <circle cx="850" cy="310" r="26"/>
+  </g>
+  <g font-size="14" font-weight="bold" text-anchor="middle" fill="#1a1a1a">
+    <text x="480" y="115">AP1</text><text x="480" y="515">AP2</text><text x="850" y="315">AP3</text>
+  </g>
+  <g fill="#fff9db" stroke="#d9480f" stroke-width="2">
+    <circle cx="400" cy="46" r="20"/><circle cx="570" cy="46" r="20"/>
+    <circle cx="400" cy="578" r="20"/><circle cx="660" cy="578" r="20"/>
+  </g>
+  <g font-size="12" font-weight="bold" text-anchor="middle" fill="#1a1a1a">
+    <text x="400" y="50">STA1</text><text x="570" y="50">STA2</text>
+    <text x="400" y="582">STA3</text><text x="660" y="582">STA4</text>
+  </g>
+  <g font-size="12" fill="#444">
+    <text x="480" y="222" text-anchor="middle">S1-S2</text>
+    <text x="480" y="408" text-anchor="middle">S3-S4</text>
+    <text x="690" y="312">S2-S3</text>
+    <text x="270" y="312" text-anchor="end">S4-S1</text>
+    <text x="420" y="300" transform="rotate(22 420 300)">chord S1-S3 (cost 2)</text>
+  </g>
+  <g font-size="13" fill="#1a1a1a">
+    <line x1="20" y1="560" x2="70" y2="560" stroke="#1f4e9c" stroke-width="4"/>
+    <text x="78" y="565">Wired link</text>
+    <line x1="20" y1="585" x2="70" y2="585" stroke="#d9480f" stroke-width="3" stroke-dasharray="9 6"/>
+    <text x="78" y="590">Wireless link (802.11g)</text>
+    <line x1="20" y1="607" x2="70" y2="607" stroke="#d9480f" stroke-width="2" stroke-dasharray="3 6"/>
+    <text x="78" y="611">Possible roam</text>
+  </g>
+</svg>

@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+ryu-env/
+*.log
+.vscode/
+results/*.txt
+results/*.pcap
