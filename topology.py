@@ -8,8 +8,8 @@ plus a radio backup link. A monitor detects failed links and reroutes automatica
   sudo python3 topology.py --auto     scripted failure demo, prints packet loss
   options: --no-capture (skip pcap files)
 """
-import heapq, os, subprocess, sys, threading, time
-from collections import defaultdict
+import heapq, http.server, json, os, subprocess, sys, threading, time
+from collections import defaultdict, deque
 
 from mininet.log import setLogLevel, info
 from mininet.node import OVSKernelSwitch
@@ -45,8 +45,13 @@ LOCK = threading.Lock()
 MON = None
 
 
+EVENTS, EVENT_COUNT = deque(maxlen=40), [0]   # shown in the web dashboard
+
+
 def log(msg):
     print('[%s] %s' % (time.strftime('%H:%M:%S'), msg), flush=True)
+    EVENTS.append(msg)
+    EVENT_COUNT[0] += 1
 
 
 # ------------------------------------------------------------ routing
@@ -133,12 +138,14 @@ class Monitor(threading.Thread):
     def __init__(self, interval=0.2):
         super().__init__(daemon=True)
         self.interval, self.running, self.fail_time = interval, True, None
+        self.installed = frozenset()   # links the installed flows already avoid
 
     def snapshot(self):
         return frozenset((a, b) for a, b, _, _ in EDGES if not edge_alive(a, b))
 
     def run(self):
         prev = self.snapshot()
+        self.installed = prev
         while self.running:
             cur = self.snapshot()
             if cur != prev:
@@ -152,6 +159,7 @@ class Monitor(threading.Thread):
                     log('END-TO-END  failure to recovery: %.0f ms' % ((time.time() - self.fail_time) * 1000))
                     self.fail_time = None
                 prev = cur
+                self.installed = cur
             time.sleep(self.interval)
 
 
@@ -269,6 +277,115 @@ def self_test():
     return not bad
 
 
+
+# ------------------------------------------------------------ live dashboard API
+STATS = {'sent': 0, 'recv': 0, 'lost': 0, 'rtt': None}
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+class PingStat(threading.Thread):
+    """Keeps a real ping h1 -> sta3 running and counts what arrives."""
+    def __init__(self, src='h1', dst='sta3'):
+        super().__init__(daemon=True)
+        self.proc = NODES[src].popen(['ping', '-O', '-i', '0.2', IPS[dst]],
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                     universal_newlines=True)
+
+    def run(self):
+        for line in self.proc.stdout:
+            if 'icmp_seq=' not in line:
+                continue
+            seq = int(line.split('icmp_seq=')[1].split()[0])
+            STATS['sent'] = max(STATS['sent'], seq)
+            if 'bytes from' in line:
+                STATS['recv'] += 1
+                if 'time=' in line:
+                    STATS['rtt'] = float(line.split('time=')[1].split()[0])
+            STATS['lost'] = max(0, STATS['sent'] - STATS['recv'] - 1)
+
+    def stop(self):
+        self.proc.terminate()
+
+
+def state_json():
+    return {
+        'links': [{'a': a, 'b': b, 'kind': k, 'cost': c, 'up': edge_alive(a, b)}
+                  for a, b, c, k in EDGES if k != 'wifi'],
+        'installed_down': ['|'.join(sorted(e)) for e in (MON.installed if MON else [])],
+        'stats': STATS, 'events': list(EVENTS), 'event_count': EVENT_COUNT[0],
+    }
+
+
+def run_demo_plan():
+    t0 = time.time()
+    for at, a, b, st in [(2, 's2', 's3', 'down'), (8, 's3', 's4', 'down'),
+                         (14, 's2', 's3', 'up'), (19, 's3', 's4', 'up')]:
+        time.sleep(max(0, at - (time.time() - t0)))
+        set_link(a, b, st)
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _send(self, code, body, ctype='application/json'):
+        data = body if isinstance(body, bytes) else json.dumps(body).encode()
+        self.send_response(code)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Content-Length', str(len(data)))
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_OPTIONS(self):
+        self._send(204, b'')
+
+    def do_GET(self):
+        if self.path.startswith('/api/state'):
+            self._send(200, state_json())
+        elif self.path in ('/', '/index.html'):
+            with open(os.path.join(HERE, 'public', 'index.html'), 'rb') as f:
+                self._send(200, f.read(), 'text/html; charset=utf-8')
+        else:
+            self._send(404, {'error': 'not found'})
+
+    def do_POST(self):
+        n = int(self.headers.get('Content-Length') or 0)
+        try:
+            body = json.loads(self.rfile.read(n) or b'{}')
+        except ValueError:
+            return self._send(400, {'error': 'bad json'})
+        if self.path == '/api/link':
+            a, b, st = body.get('a'), body.get('b'), body.get('state')
+            if frozenset((a, b)) not in LINKS or st not in ('up', 'down'):
+                return self._send(400, {'error': 'unknown link or state'})
+            set_link(a, b, st)
+        elif self.path == '/api/fixall':
+            for k in LINKS:
+                a, b = sorted(k)
+                if not edge_alive(a, b):
+                    set_link(a, b, 'up')
+        elif self.path == '/api/demo':
+            threading.Thread(target=run_demo_plan, daemon=True).start()
+        else:
+            return self._send(404, {'error': 'not found'})
+        self._send(200, {'ok': True})
+
+
+def start_api(port=8080):
+    try:
+        srv = http.server.ThreadingHTTPServer(('0.0.0.0', port), Handler)
+    except OSError as e:
+        log('API         could not start on port %d: %s' % (port, e))
+        return None
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    log('API         live dashboard: open http://localhost:%d in a browser on this VM' % port)
+    return srv
+
+
 # ------------------------------------------------------------ captures + demo
 def start_captures():
     os.makedirs('captures', exist_ok=True)
@@ -363,6 +480,9 @@ if __name__ == '__main__':
     self_test()
     MON = Monitor()
     MON.start()
+    pinger = PingStat()
+    pinger.start()
+    api_srv = start_api()
     caps = [] if '--no-capture' in sys.argv else start_captures()
     try:
         if '--auto' in sys.argv:
@@ -372,6 +492,9 @@ if __name__ == '__main__':
             RescueCLI(net)
     finally:
         MON.running = False
+        pinger.stop()
+        if api_srv:
+            api_srv.shutdown()
         for p in caps:
             p.terminate()
         net.stop()
