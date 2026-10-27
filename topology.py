@@ -8,7 +8,7 @@ plus a radio backup link. A monitor detects failed links and reroutes automatica
   sudo python3 topology.py --auto     scripted failure demo, prints packet loss
   options: --no-capture (skip pcap files)
 """
-import heapq, http.server, json, os, subprocess, sys, threading, time
+import heapq, http.server, json, os, socket, subprocess, sys, threading, time
 from collections import defaultdict, deque
 
 from mininet.log import setLogLevel, info
@@ -377,15 +377,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self._send(200, {'ok': True})
 
 
+class DualStackServer(http.server.ThreadingHTTPServer):
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        super().server_bind()
+
+
 def start_api(port=8080):
     try:
-        srv = http.server.ThreadingHTTPServer(('0.0.0.0', port), Handler)
+        try:
+            srv = DualStackServer(('::', port), Handler)      # answers localhost, 127.0.0.1 and ::1
+        except OSError:
+            srv = http.server.ThreadingHTTPServer(('0.0.0.0', port), Handler)
     except OSError as e:
         log('API         could not start on port %d: %s' % (port, e))
         return None
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    log('API         live dashboard: open http://localhost:%d in a browser on this VM' % port)
+    log('API         live dashboard: open http://127.0.0.1:%d in Firefox on this VM' % port)
     return srv
 
 
