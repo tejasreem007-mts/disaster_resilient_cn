@@ -168,8 +168,9 @@ def set_link(a, b, state):
 
 # ------------------------------------------------------------ build
 def build():
+    # no default link class: TCLink is requested per wired link, so station-AP links stay real Wi-Fi
     net = Mininet_wifi(controller=None, accessPoint=OVSKernelAP,
-                       switch=OVSKernelSwitch, link=TCLink)
+                       switch=OVSKernelSwitch)
     info('*** Adding nodes\n')
     for h in ('h1', 'h2'):
         NODES[h] = net.addHost(h, ip=IPS[h] + '/24')
@@ -236,7 +237,9 @@ def wait_for_wifi(timeout=20):
                 del pending[sta]
         time.sleep(1)
     for sta in pending:
-        log('WIFI        %s is NOT associated (check range/positions)' % sta)
+        log('WIFI        %s is NOT associated' % sta)
+        print(NODES[sta].cmd('iw dev'))
+        print(NODES[sta].cmd('iw dev %s-wlan0 link' % sta))
     return not pending
 
 
