@@ -24,10 +24,10 @@ body{
   background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);
   background-size:28px 28px; color:var(--ink); font:16px/1.55 var(--body); min-height:100vh;
 }
-header{padding:26px clamp(16px,4vw,48px) 4px}
-h1{font:700 clamp(26px,4vw,40px)/1.15 var(--hand);margin:0;transform:rotate(-.6deg);display:inline-block}
+header{padding:26px 32px 4px;padding:26px clamp(16px,4vw,48px) 4px}
+h1{font:700 34px/1.15 var(--hand);font:700 clamp(26px,4vw,40px)/1.15 var(--hand);margin:0;transform:rotate(-.6deg);display:inline-block}
 .sub{margin:6px 0 0;max-width:62ch;color:var(--soft)}
-main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:0;padding:8px clamp(16px,4vw,48px) 40px}
+main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:0;padding:8px 32px 40px;padding:8px clamp(16px,4vw,48px) 40px}
 @media(max-width:980px){main{grid-template-columns:1fr}}
 .map{padding:6px 18px 0 0}
 svg{width:100%;height:auto;display:block;overflow:visible}
@@ -169,10 +169,10 @@ gHi.setAttribute('filter','url(#wob)');
 
 // routing
 function route(src,dst,s){
-  const adj={};E.forEach(([a,b,c])=>{if(!s.has(key(a,b))){(adj[a]??=[]).push([b,c]);(adj[b]??=[]).push([a,c])}});
+  const adj={};E.forEach(([a,b,c])=>{if(!s.has(key(a,b))){(adj[a]=adj[a]||[]).push([b,c]);(adj[b]=adj[b]||[]).push([a,c])}});
   const dist={[dst]:0},nxt={},q=[[0,dst]];
   while(q.length){q.sort((x,y)=>x[0]-y[0]);const [d,u]=q.shift();if(d>dist[u])continue;
-    for(const [v,c] of adj[u]||[]){if(d+c<(dist[v]??1e9)){dist[v]=d+c;nxt[v]=u;q.push([d+c,v])}}}
+    for(const [v,c] of adj[u]||[]){if(d+c<(v in dist?dist[v]:1e9)){dist[v]=d+c;nxt[v]=u;q.push([d+c,v])}}}
   if(src!==dst&&!(src in nxt))return null;
   const p=[src];while(p[p.length-1]!==dst)p.push(nxt[p[p.length-1]]);return p;
 }
