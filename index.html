@@ -37,6 +37,7 @@ aside{border-left:2px solid var(--margin);padding:6px 0 0 22px}
 .note b{font-weight:700}
 select{font:700 19px var(--hand);color:var(--pen);background:transparent;border:0;border-bottom:2px dotted var(--pen);padding:0 2px;cursor:pointer}
 select option{color:#000}
+.mode{font:700 18px var(--hand);margin:8px 0 0;color:var(--soft)}.mode.live{color:var(--ok)}
 .status{font:700 21px/1.3 var(--hand);margin:14px 0 4px}
 .status.ok{color:var(--ok)}.status.warn{color:#b8730b}.status.bad{color:var(--red)}
 .path{margin:0 0 4px;font-weight:600}
@@ -65,6 +66,7 @@ text{font-family:var(--hand)}
 <header>
   <h1>Disaster-Resilient Communication Network</h1>
   <p class="sub">Cut a link on the sketch and watch the controller find another way. When every wired route to the field team is gone, traffic falls back to the radio link.</p>
+  <p class="mode" id="mode">Simulation mode: nothing on this page is connected to Mininet yet.</p>
 </header>
 <main>
   <section class="map">
@@ -110,7 +112,7 @@ const $=id=>document.getElementById(id);
 const NS='http://www.w3.org/2000/svg';
 const svg=$('svg');
 const el=(t,a={},p=svg)=>{const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);p.appendChild(e);return e};
-const down=new Set();let routeDown=new Set();
+const down=new Set();let routeDown=new Set();let live=false;
 
 function wavy(x1,y1,x2,y2,amp=5,period=22){
   const L=Math.hypot(x2-x1,y2-y1),ux=(x2-x1)/L,uy=(y2-y1)/L,px=-uy,py=ux;let d='';
@@ -208,6 +210,7 @@ function renderLinks(){
 }
 let timer=null;
 function toggle(a,b){
+  if(live){api('/api/link',{a,b,state:down.has(key(a,b))?'up':'down'});return}
   const k=key(a,b),was=down.has(k);was?down.delete(k):down.add(k);
   log(`${was?'Repaired':'Cut'} ${a} to ${b}.`,was?'ok':'bad');renderLinks();
   clearTimeout(timer);const t0=performance.now();
@@ -229,24 +232,24 @@ function stat(){
 }
 function pointOn(o,from,f){const L=o.p.getTotalLength();return o.p.getPointAtLength(o.a===from?L*f:L*(1-f))}
 function sendPacket(){
-  const path=curPath;if(!path||path.length<2)return;sent++;
+  const path=curPath;if(!path||path.length<2)return;if(!live)sent++;
   const c=el('circle',{r:6,fill:'var(--ink)'},gPkt);
   let seg=0,t0=performance.now();
   const dur=path.some((n,i)=>i&&edgeEls[key(n,path[i-1])].k==='radio')?700:340;
   function step(now){
     const a=path[seg],b=path[seg+1],o=edgeEls[key(a,b)];
-    if(down.has(key(a,b))){c.setAttribute('fill','var(--red)');c.setAttribute('r',9);lost++;stat();setTimeout(()=>c.remove(),700);return}
+    if(down.has(key(a,b))){c.setAttribute('fill','var(--red)');c.setAttribute('r',9);if(!live)lost++;stat();setTimeout(()=>c.remove(),700);return}
     const f=Math.min(1,(now-t0)/dur),p=pointOn(o,a,f);
     c.setAttribute('cx',p.x);c.setAttribute('cy',p.y);
-    if(f>=1){seg++;t0=now;if(seg>=path.length-1){c.remove();recv++;stat();return}}
+    if(f>=1){seg++;t0=now;if(seg>=path.length-1){c.remove();if(!live)recv++;stat();return}}
     requestAnimationFrame(step);
   }
   requestAnimationFrame(step);stat();
 }
 setInterval(sendPacket,380);setInterval(stat,150);
 
-$('reset').onclick=()=>{[...down].forEach(k=>{const [a,b]=k.split('|');toggle(a,b)})};
-$('demo').onclick=()=>{
+$('reset').onclick=()=>{if(live){api('/api/fixall',{});return}[...down].forEach(k=>{const [a,b]=k.split('|');toggle(a,b)})};
+$('demo').onclick=()=>{if(live){api('/api/demo',{});return}
   $('src').value='h1';$('dst').value='sta3';
   [...down].forEach(k=>{const [a,b]=k.split('|');toggle(a,b)});
   log('Demo started: cut s2-s3, then s3-s4, then repair both.');
@@ -254,6 +257,32 @@ $('demo').onclick=()=>{
 };
 $('src').onchange=$('dst').onchange=()=>{renderRoute();log(`Route ${$('src').value} to ${$('dst').value}: ${curPath?curPath.join(' to '):'none'}`)};
 renderLinks();renderRoute();stat();log('Ready. Route: '+(curPath?curPath.join(' to '):''),'ok');
+
+// ---- live connection to topology.py (served from the same address, or ?api=https://your-tunnel)
+const API=new URLSearchParams(location.search).get('api')||'';
+async function api(path,body){try{await fetch(API+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})}catch(e){}}
+let seen=0,sig='';
+async function poll(){
+  try{
+    const r=await fetch(API+'/api/state',{cache:'no-store'});
+    if(!r.ok)throw new Error('no api');
+    const s=await r.json();
+    if(!live){live=true;$('mode').textContent='Live: connected to the running Mininet network.';$('mode').className='mode live';$('log').innerHTML='';seen=0}
+    down.clear();s.links.forEach(l=>{if(!l.up)down.add(key(l.a,l.b))});
+    routeDown=new Set(s.installed_down);
+    sent=s.stats.sent;recv=s.stats.recv;lost=s.stats.lost;
+    const n=s.event_count-seen;
+    if(n>0)s.events.slice(-n).forEach(m=>log(m,/LINK EVENT|INJECT.*DOWN|UNREACH/.test(m)?'bad':'ok'));
+    seen=s.event_count;
+    const now=[...down].sort().join()+'/'+[...routeDown].sort().join();
+    if(now!==sig){sig=now;renderLinks();renderRoute()}
+    stat();
+  }catch(e){
+    if(live){live=false;$('mode').textContent='Lost contact with Mininet. Back to simulation mode.';$('mode').className='mode'}
+  }
+  setTimeout(poll,live?500:5000);
+}
+poll();
 </script>
 </body>
 </html>
