@@ -346,8 +346,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path.startswith('/api/state'):
             self._send(200, state_json())
         elif self.path in ('/', '/index.html'):
-            with open(os.path.join(HERE, 'public', 'index.html'), 'rb') as f:
-                self._send(200, f.read(), 'text/html; charset=utf-8')
+            for cand in (os.path.join(HERE, 'public', 'index.html'), os.path.join(HERE, 'index.html')):
+                if os.path.exists(cand):
+                    with open(cand, 'rb') as f:
+                        return self._send(200, f.read(), 'text/html; charset=utf-8')
+            self._send(404, b'index.html not found. Put it in the public/ folder next to topology.py.', 'text/plain')
         else:
             self._send(404, {'error': 'not found'})
 
