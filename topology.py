@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-Disaster-Resilient Communication Network
-Automated link-failure detection + alternate-path recovery (Mininet-WiFi)
+Disaster-Resilient Communication Network (Mininet-WiFi)
+Same network as public/index.html: 2 hosts, 4 core switches, 2 APs, 3 Wi-Fi stations,
+plus a radio backup link. A monitor detects failed links and reroutes automatically.
 
-Run:  sudo python3 topology.py            (interactive CLI)
-      sudo python3 topology.py --auto     (scripted failure demo, then exit)
+  sudo python3 topology.py            interactive (CLI commands: path, cut, fix, fixall, status)
+  sudo python3 topology.py --auto     scripted failure demo, prints packet loss
+  options: --no-capture (skip pcap files)
 """
 import heapq, os, subprocess, sys, threading, time
 from collections import defaultdict
@@ -16,41 +18,41 @@ from mn_wifi.net import Mininet_wifi
 from mn_wifi.node import OVSKernelAP
 from mn_wifi.cli import CLI
 
-# ---------------------------------------------------------------- topology
-# (a, b, cost, kind)   kind: wired | radio (backup microwave link) | wifi
+# (a, b, cost, kind)   kind: wired | radio | wifi
 EDGES = [
-    ('h1', 's1', 1, 'wired'),   # command centre (sender)
-    ('h2', 's4', 1, 'wired'),   # hospital server
+    ('h1', 's1', 1, 'wired'),
+    ('h2', 's4', 1, 'wired'),
     ('s1', 's2', 1, 'wired'),
-    ('s2', 's3', 1, 'wired'),   # primary path to s3
-    ('s1', 's4', 2, 'wired'),   # first alternate
+    ('s2', 's3', 1, 'wired'),
+    ('s1', 's4', 2, 'wired'),
     ('s4', 's3', 2, 'wired'),
-    ('s2', 's4', 3, 'wired'),   # cross link
-    ('s1', 's3', 10, 'radio'),  # last-resort radio backhaul (lossy, slow)
+    ('s2', 's4', 3, 'wired'),
+    ('s1', 's3', 10, 'radio'),
     ('s2', 'ap1', 1, 'wired'),
     ('s3', 'ap2', 1, 'wired'),
     ('ap1', 'sta1', 1, 'wifi'),
     ('ap1', 'sta2', 1, 'wifi'),
-    ('ap2', 'sta3', 1, 'wifi'),  # field receiver (rescue team)
+    ('ap2', 'sta3', 1, 'wifi'),
 ]
 HOSTS = ['h1', 'h2', 'sta1', 'sta2', 'sta3']
 SWITCHES = ['s1', 's2', 's3', 's4']
+STATION_AP = {'sta1': 'ap1', 'sta2': 'ap1', 'sta3': 'ap2'}
 IPS = {'h1': '10.0.0.1', 'h2': '10.0.0.2',
        'sta1': '10.0.0.11', 'sta2': '10.0.0.12', 'sta3': '10.0.0.13'}
 
-NODES = {}   # name -> node object
-LINKS = {}   # frozenset({a,b}) -> Link (wired/radio only)
+NODES, LINKS = {}, {}
 LOCK = threading.Lock()
+MON = None
 
 
 def log(msg):
     print('[%s] %s' % (time.strftime('%H:%M:%S'), msg), flush=True)
 
 
-# ---------------------------------------------------------------- routing
-def oper_up(intf_name):
+# ------------------------------------------------------------ routing
+def oper_up(name):
     try:
-        with open('/sys/class/net/%s/operstate' % intf_name) as f:
+        with open('/sys/class/net/%s/operstate' % name) as f:
             return f.read().strip() == 'up'
     except OSError:
         return False
@@ -59,10 +61,10 @@ def oper_up(intf_name):
 def edge_alive(a, b):
     link = LINKS.get(frozenset((a, b)))
     if link is None:
-        return True  # wifi association: not failed in this demo
+        return True
     for intf in (link.intf1, link.intf2):
         if intf.node.name.startswith('h'):
-            continue  # host side lives in its own namespace
+            continue  # host side is inside its own namespace
         if not oper_up(intf.name):
             return False
     return True
@@ -83,15 +85,16 @@ def compute_routes():
                 continue
             for v, c in adj[u]:
                 if d + c < dist.get(v, 1e9):
-                    dist[v] = d + c
-                    nxt[v] = u
+                    dist[v], nxt[v] = d + c, u
                     heapq.heappush(pq, (d + c, v))
         table[dst] = nxt
     return table
 
 
 def path(table, src, dst):
-    if src != dst and src not in table[dst]:
+    if src == dst:
+        return [src]
+    if src not in table[dst]:
         return None
     p = [src]
     while p[-1] != dst:
@@ -100,19 +103,15 @@ def path(table, src, dst):
 
 
 def port_of(sw, neighbor):
-    link = LINKS.get(frozenset((sw, neighbor)))
-    if link is None:
-        raise KeyError(f"No link between {sw} and {neighbor}")
+    link = LINKS[frozenset((sw, neighbor))]
     intf = link.intf1 if link.intf1.node.name == sw else link.intf2
-    return NODES[sw].ports[intf.name]
+    return NODES[sw].ports[intf]
 
 
 def ofctl(*args):
-    try:
-        subprocess.run(['ovs-ofctl'] + list(args), check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        log('OFCTL ERROR: %s' % e)
+    r = subprocess.run(['ovs-ofctl'] + list(args), stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, universal_newlines=True)
+    return r.stdout + r.stderr
 
 
 def install_flows():
@@ -120,26 +119,20 @@ def install_flows():
         table = compute_routes()
         for sw in SWITCHES:
             for h in HOSTS:
-                match = 'priority=100,ip,nw_dst=%s' % IPS[h]
                 nh = table[h].get(sw)
                 if nh is None:
                     ofctl('del-flows', sw, 'ip,nw_dst=%s' % IPS[h])
                 else:
-                    try:
-                        port = port_of(sw, nh)
-                        ofctl('add-flow', sw, '%s,actions=output:%d' % (match, port))
-                    except KeyError:
-                        # Skip wifi links (not in LINKS) - AP learns via NORMAL
-                        pass
+                    ofctl('add-flow', sw, 'priority=100,ip,nw_dst=%s,actions=output:%d'
+                          % (IPS[h], port_of(sw, nh)))
         return table
 
 
 class Monitor(threading.Thread):
-    """Polls link state every 200 ms; on any change recomputes + reinstalls routes."""
+    """Checks every link every 200 ms; on a change recomputes routes and rewrites the flows."""
     def __init__(self, interval=0.2):
         super().__init__(daemon=True)
-        self.interval, self.running = interval, True
-        self.fail_time = None   # set by demo to measure detect+recover time
+        self.interval, self.running, self.fail_time = interval, True, None
 
     def snapshot(self):
         return frozenset((a, b) for a, b, _, _ in EDGES if not edge_alive(a, b))
@@ -150,12 +143,10 @@ class Monitor(threading.Thread):
             cur = self.snapshot()
             if cur != prev:
                 t0 = time.time()
-                down = sorted('%s-%s' % e for e in cur)
-                log('LINK EVENT  down links: %s' % (down or 'none'))
+                log('LINK EVENT  down links: %s' % (sorted('%s-%s' % e for e in cur) or 'none'))
                 table = install_flows()
-                dt = (time.time() - t0) * 1000
                 p = path(table, 'h1', 'sta3')
-                log('RECOVERED   flows reinstalled in %.0f ms' % dt)
+                log('RECOVERED   flows rewritten in %.0f ms' % ((time.time() - t0) * 1000))
                 log('NEW PATH    h1 -> sta3 : %s' % (' -> '.join(p) if p else 'UNREACHABLE'))
                 if self.fail_time:
                     log('END-TO-END  failure to recovery: %.0f ms' % ((time.time() - self.fail_time) * 1000))
@@ -164,129 +155,220 @@ class Monitor(threading.Thread):
             time.sleep(self.interval)
 
 
-def set_link(a, b, state, mon=None):
+def set_link(a, b, state):
     link = LINKS[frozenset((a, b))]
-    if state == 'down' and mon:
-        mon.fail_time = time.time()
+    if state == 'down' and MON:
+        MON.fail_time = time.time()
     for intf in (link.intf1, link.intf2):
         if not intf.node.name.startswith('h'):
-            subprocess.run(['ip', 'link', 'set', 'dev', intf.name, state], check=False)
+            subprocess.run(['ip', 'link', 'set', 'dev', intf.name, state])
             break
     log('INJECT      link %s-%s %s' % (a, b, state.upper()))
 
 
-# ---------------------------------------------------------------- build
+# ------------------------------------------------------------ build
 def build():
-    # Clean up any leftover interfaces from previous runs
-    import subprocess
-    subprocess.run(['mn', '-c'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
     net = Mininet_wifi(controller=None, accessPoint=OVSKernelAP,
                        switch=OVSKernelSwitch, link=TCLink)
     info('*** Adding nodes\n')
     for h in ('h1', 'h2'):
         NODES[h] = net.addHost(h, ip=IPS[h] + '/24')
-    pos = {'sta1': '22,58,0', 'sta2': '36,44,0', 'sta3': '96,56,0'}
+    pos = {'sta1': '25,55,0', 'sta2': '38,45,0', 'sta3': '95,55,0'}
     for s in ('sta1', 'sta2', 'sta3'):
         NODES[s] = net.addStation(s, ip=IPS[s] + '/24', position=pos[s])
     for s in SWITCHES:
         NODES[s] = net.addSwitch(s, cls=OVSKernelSwitch, failMode='secure')
     NODES['ap1'] = net.addAccessPoint('ap1', ssid='zoneA', mode='g', channel='1',
-                                      position='30,50,0', failMode='secure')
+                                      position='30,50,0', range=60, failMode='secure')
     NODES['ap2'] = net.addAccessPoint('ap2', ssid='zoneB', mode='g', channel='6',
-                                      position='90,50,0', failMode='secure')
-    net.setPropagationModel(model='logDistance', exp=4.5)
+                                      position='90,50,0', range=60, failMode='secure')
     info('*** Configuring wifi nodes\n')
-    net.configureWifiNodes()
+    (getattr(net, 'configureNodes', None) or net.configureWifiNodes)()
 
-    info('*** Adding wired + radio links\n')
+    info('*** Connecting everything\n')
     for a, b, cost, kind in EDGES:
-        if kind == 'wifi':
-            continue
-        if kind == 'radio':
-            l = net.addLink(NODES[a], NODES[b], cls=TCLink, bw=5, delay='30ms', loss=5)
-        else:
-            l = net.addLink(NODES[a], NODES[b], cls=TCLink, bw=100, delay='2ms')
-        LINKS[frozenset((a, b))] = l
+        if kind == 'wired':
+            net.addLink(NODES[a], NODES[b], cls=TCLink, bw=100, delay='2ms')
+        elif kind == 'radio':
+            net.addLink(NODES[a], NODES[b], cls=TCLink, bw=5, delay='30ms', loss=5)
+        else:  # wifi: station joins its access point explicitly
+            net.addLink(NODES[a], NODES[b])
     net.build()
     net.start()
+
+    # addLink() may return None, so collect the link objects afterwards
+    wanted = {frozenset((a, b)) for a, b, _, k in EDGES if k != 'wifi'}
+    for l in net.links:
+        try:
+            k = frozenset((l.intf1.node.name, l.intf2.node.name))
+        except AttributeError:
+            continue
+        if k in wanted:
+            LINKS[k] = l
+    for k in wanted - set(LINKS):
+        a, b = sorted(k)
+        found = net.linksBetween(NODES[a], NODES[b])
+        if found:
+            LINKS[k] = found[0]
+    missing = wanted - set(LINKS)
+    if missing:
+        raise RuntimeError('links not found: %s' % sorted(tuple(sorted(m)) for m in missing))
+
     for ap in ('ap1', 'ap2'):
-        ofctl('add-flow', ap, 'table=0,priority=1,actions=NORMAL')  # APs have one uplink: safe to learn
-    # static ARP so no broadcast storms in the meshed core
-    for a in HOSTS:
+        ofctl('add-flow', ap, 'priority=1,actions=NORMAL')
+    for a in HOSTS:                       # static ARP: no broadcast storms in the meshed core
         for b in HOSTS:
             if a != b:
                 NODES[a].setARP(IPS[b], NODES[b].MAC())
     return net
 
 
+# ------------------------------------------------------------ self test
+def wait_for_wifi(timeout=20):
+    log('WIFI        waiting for stations to associate...')
+    t0 = time.time()
+    pending = dict(STATION_AP)
+    while pending and time.time() - t0 < timeout:
+        for sta, ap in list(pending.items()):
+            out = NODES[sta].cmd('iw dev %s-wlan0 link' % sta)
+            if 'Connected' in out:
+                log('WIFI        %s connected to %s' % (sta, ap))
+                del pending[sta]
+        time.sleep(1)
+    for sta in pending:
+        log('WIFI        %s is NOT associated (check range/positions)' % sta)
+    return not pending
+
+
+def self_test():
+    log('TEST        pinging every pair once')
+    bad = []
+    for a in HOSTS:
+        row = []
+        for b in HOSTS:
+            if a == b:
+                row.append(' - ')
+                continue
+            out = NODES[a].cmd('ping -c1 -W2 %s' % IPS[b])
+            ok = ' 1 received' in out or '1 received' in out
+            row.append(' ok' if ok else 'FAIL')
+            if not ok:
+                bad.append((a, b))
+        print('   %-5s %s' % (a, ' '.join(row)))
+    print('         ' + ' '.join('%-4s' % h for h in HOSTS))
+    if bad:
+        log('TEST        %d pair(s) failed. Flow counts per switch:' % len(bad))
+        for sw in SWITCHES:
+            n = max(0, len(ofctl('dump-flows', sw).strip().splitlines()) - 1)
+            print('   %s has %d flow rules' % (sw, n))
+    else:
+        log('TEST        all hosts and stations can reach each other')
+    return not bad
+
+
+# ------------------------------------------------------------ captures + demo
 def start_captures():
     os.makedirs('captures', exist_ok=True)
     procs = []
-    for key, l in LINKS.items():
+    for l in LINKS.values():
         for intf in (l.intf1, l.intf2):
-            if intf.node.name.startswith('h'):
-                continue
-            procs.append(subprocess.Popen(
-                ['tcpdump', '-i', intf.name, '-U', '-w', 'captures/%s.pcap' % intf.name],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
-            break   # one side of each link is enough
+            if not intf.node.name.startswith('h'):
+                procs.append(subprocess.Popen(
+                    ['tcpdump', '-i', intf.name, '-U', '-w', 'captures/%s.pcap' % intf.name],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+                break
     return procs
 
 
 def analyse(logfile, interval=0.2):
-    seqs, total = set(), 0
+    seqs = set()
     for line in open(logfile):
         if 'icmp_seq=' in line:
             seqs.add(int(line.split('icmp_seq=')[1].split()[0]))
     if not seqs:
+        log('RESULT      no replies recorded')
         return
     total = max(seqs)
-    miss = [i for i in range(1, total + 1) if i not in seqs]
     run = best = 0
     for i in range(1, total + 1):
-        run = run + 1 if i not in seqs else 0
+        run = 0 if i in seqs else run + 1
         best = max(best, run)
     log('RESULT      sent=%d received=%d lost=%d longest outage=%.1fs'
-        % (total, len(seqs), len(miss), best * interval))
+        % (total, len(seqs), total - len(seqs), best * interval))
 
 
-def auto_demo(net, mon):
+def auto_demo():
     os.makedirs('results', exist_ok=True)
     out = 'results/ping_h1_sta3.log'
-    info('*** Waiting for WiFi association...\n')
-    time.sleep(5)
-    for sta in ('sta1', 'sta2', 'sta3'):
-        NODES[sta].cmd('iw dev wlan0 link | grep -q "Connected" || echo "NOT ASSOCIATED"')
     NODES['h1'].cmd('ping -i 0.2 -c 300 %s > %s &' % (IPS['sta3'], out))
     plan = [(8, 's2', 's3', 'down'), (22, 's3', 's4', 'down'),
             (38, 's2', 's3', 'up'), (48, 's3', 's4', 'up')]
     t0 = time.time()
     for at, a, b, st in plan:
         time.sleep(max(0, at - (time.time() - t0)))
-        set_link(a, b, st, mon)
-    time.sleep(max(0, 62 - (time.time() - t0)))
+        set_link(a, b, st)
+    time.sleep(max(0, 63 - (time.time() - t0)))
     analyse(out)
+
+
+class RescueCLI(CLI):
+    """Same controls as the web page."""
+    def do_path(self, line):
+        "path [src dst]   show the route currently in use (default h1 sta3)"
+        a = line.split() or ['h1', 'sta3']
+        if len(a) != 2 or a[0] not in HOSTS or a[1] not in HOSTS:
+            print('usage: path <src> <dst>   nodes: %s' % ' '.join(HOSTS)); return
+        p = path(compute_routes(), a[0], a[1])
+        print(' -> '.join(p) if p else 'no route')
+
+    def do_cut(self, line):
+        "cut <a> <b>   cut a link, e.g. cut s2 s3"
+        self._flip(line, 'down')
+
+    def do_fix(self, line):
+        "fix <a> <b>   repair a link"
+        self._flip(line, 'up')
+
+    def do_fixall(self, line):
+        "fixall   repair every link"
+        for k, l in LINKS.items():
+            a, b = sorted(k)
+            if not edge_alive(a, b):
+                set_link(a, b, 'up')
+
+    def do_status(self, line):
+        "status   list every link and the current h1 -> sta3 route"
+        for a, b, c, kind in EDGES:
+            if kind != 'wifi':
+                print('  %-4s - %-4s %-6s %s' % (a, b, kind, 'up' if edge_alive(a, b) else 'DOWN'))
+        self.do_path('')
+
+    def _flip(self, line, state):
+        a = line.split()
+        if len(a) != 2 or frozenset(a) not in LINKS:
+            print('usage: cut|fix <a> <b>   links: %s' %
+                  ', '.join('%s-%s' % tuple(sorted(k)) for k in LINKS)); return
+        set_link(a[0], a[1], state)
 
 
 if __name__ == '__main__':
     setLogLevel('info')
     net = build()
     table = install_flows()
-    log('INITIAL     h1 -> sta3 : %s' % ' -> '.join(path(table, 'h1', 'sta3')))
-    mon = Monitor(); mon.start()
-    caps = [] if '--no-capture' in sys.argv or True else start_captures()  # tcpdump often unavailable
+    log('INITIAL     h1 -> sta3 : %s' % ' -> '.join(path(table, 'h1', 'sta3') or ['none']))
+    wait_for_wifi()
+    self_test()
+    MON = Monitor()
+    MON.start()
+    caps = [] if '--no-capture' in sys.argv else start_captures()
     try:
         if '--auto' in sys.argv:
-            auto_demo(net, mon)
+            auto_demo()
         else:
-            info('*** Try: h1 ping sta3 | link s2 s3 down | link s2 s3 up | links\n')
-            CLI(net)
+            info('*** Commands: path | cut s2 s3 | fix s2 s3 | fixall | status | h1 ping sta3\n')
+            RescueCLI(net)
     finally:
-        mon.running = False
+        MON.running = False
         for p in caps:
             p.terminate()
-        try:
-            net.stop()
-        except Exception as e:
-            log('NET STOP ERROR: %s' % e)
+        net.stop()
